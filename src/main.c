@@ -1,64 +1,64 @@
-#include "driver/adc.h"        // 包含 ADC 驱动
-#include "esp_log.h"           // 用于日志输出
-#include "driver/gpio.h"       // 包含 GPIO 控制
-#include "ClosedCube_HDC1080.h"// 包含湿度传感器 HDC1080 驱动
-#include "freertos/FreeRTOS.h" // FreeRTOS 头文件，用于任务和延时
-#include "freertos/task.h"     // FreeRTOS 的任务控制
+#include "driver/adc.h"        // Include ADC driver
+#include "esp_log.h"           // For logging output
+#include "driver/gpio.h"       // Include GPIO control
+#include "ClosedCube_HDC1080.h"// Include HDC1080 humidity sensor driver
+#include "freertos/FreeRTOS.h" // FreeRTOS header for tasks and delays
+#include "freertos/task.h"     // FreeRTOS task control
 
-// 定义引脚
-#define HUMIDITY_POWER_PIN GPIO_NUM_26  // 传感器电源引脚（GPIO 26）
-#define MOISTURE_PIN ADC1_CHANNEL_6     // 土壤湿度传感器引脚（GPIO 34）
+// Define pins
+#define HUMIDITY_POWER_PIN GPIO_NUM_26  // Sensor power pin (GPIO 26)
+#define MOISTURE_PIN ADC1_CHANNEL_6     // Soil moisture sensor pin (GPIO 34)
 
-ClosedCube_HDC1080 hdc1080;  // 实例化 HDC1080 传感器
+ClosedCube_HDC1080 hdc1080;  // Instantiate HDC1080 sensor
 
-// 设置湿度传感器引脚，并开启传感器电源
+// Set up the humidity sensor pin and power on the sensor
 void setup_humidity_pin() {
-    gpio_set_direction(HUMIDITY_POWER_PIN, GPIO_MODE_OUTPUT);  // 设置传感器电源引脚为输出模式
-    gpio_set_level(HUMIDITY_POWER_PIN, 1);  // 打开电源
-    hdc1080.begin(0x40);  // 初始化湿度传感器 (I2C地址: 0x40)
+    gpio_set_direction(HUMIDITY_POWER_PIN, GPIO_MODE_OUTPUT);  // Set sensor power pin as output
+    gpio_set_level(HUMIDITY_POWER_PIN, 1);  // Turn on power
+    hdc1080.begin(0x40);  // Initialize humidity sensor (I2C address: 0x40)
 }
 
-// 设置土壤湿度传感器引脚 (GPIO34, ADC1通道6)
+// Set up the soil moisture sensor pin (GPIO34, ADC1 Channel 6)
 void setup_moisture_pin() {
-    adc1_config_width(ADC_WIDTH_BIT_12);  // 设置ADC分辨率为12位
-    adc1_config_channel_atten(MOISTURE_PIN, ADC_ATTEN_DB_11);  // 设置衰减，使其适应0-3.3V电压
+    adc1_config_width(ADC_WIDTH_BIT_12);  // Set ADC resolution to 12 bits
+    adc1_config_channel_atten(MOISTURE_PIN, ADC_ATTEN_DB_11);  // Set attenuation to adapt to 0-3.3V
 }
 
-// 读取湿度传感器的数据
+// Read data from the humidity sensor
 float read_humidity() {
-    return hdc1080.readHumidity();  // 读取湿度百分比
+    return hdc1080.readHumidity();  // Read humidity percentage
 }
 
-// 读取土壤湿度传感器的ADC值
+// Read the ADC value from the soil moisture sensor
 int read_moisture() {
-    return adc1_get_raw(MOISTURE_PIN);  // 获取土壤湿度传感器的ADC值
+    return adc1_get_raw(MOISTURE_PIN);  // Get ADC value from soil moisture sensor
 }
 
 void app_main() {
-    // 初始化湿度和土壤湿度传感器引脚
+    // Initialize humidity and soil moisture sensor pins
     setup_humidity_pin();
     setup_moisture_pin();
 
-    // 日志系统初始化
+    // Initialize logging system
     esp_log_level_set("SENSOR", ESP_LOG_INFO);
 
     while (true) {
-        // 打开传感器电源
+        // Power on the sensor
         gpio_set_level(HUMIDITY_POWER_PIN, 1);  
         
-        // 读取湿度传感器数据
+        // Read humidity sensor data
         float humidity = read_humidity();
-        // 读取土壤湿度传感器数据
+        // Read soil moisture sensor data
         int moisture = read_moisture();
         
-        // 打印传感器数据
-        ESP_LOGI("SENSOR", "Humidity: %.2f%%", humidity);  // 打印湿度值
-        ESP_LOGI("SENSOR", "Soil Moisture ADC Value: %d", moisture);  // 打印土壤湿度值
+        // Print sensor data
+        ESP_LOGI("SENSOR", "Humidity: %.2f%%", humidity);  // Print humidity value
+        ESP_LOGI("SENSOR", "Soil Moisture ADC Value: %d", moisture);  // Print soil moisture value
 
-        // 关闭传感器电源以节约能耗
+        // Power off the sensor to save energy
         gpio_set_level(HUMIDITY_POWER_PIN, 0);
 
-        // 每5秒读取一次
+        // Read every 5 seconds
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 }
