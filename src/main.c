@@ -1,64 +1,92 @@
-#include "driver/adc.h"        // Include ADC driver
-#include "esp_log.h"           // For logging output
-#include "driver/gpio.h"       // Include GPIO control
-#include "ClosedCube_HDC1080.h"// Include HDC1080 humidity sensor driver
-#include "freertos/FreeRTOS.h" // FreeRTOS header for tasks and delays
-#include "freertos/task.h"     // FreeRTOS task control
+#include "driver/adc.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/pcnt.h"
+#include "driver/gpio.h"
 
-// Define pins
-#define HUMIDITY_POWER_PIN GPIO_NUM_26  // Sensor power pin (GPIO 26)
-#define MOISTURE_PIN ADC1_CHANNEL_6     // Soil moisture sensor pin (GPIO 34)
+#define MOISTURE_PULSE_GPIO ADC1_CHANNEL_6  // GPIO 34 for ADC1_CHANNEL_6
+#define POWER_GPIO GPIO_NUM_26
+int16_t SOIL_PULSE_COUNT_DELAY = 500 ;    // Delay for pulse count in milliseconds
 
-ClosedCube_HDC1080 hdc1080;  // Instantiate HDC1080 sensor
+// Function to configure the PCNT unit
+void configure_pcnt() {
+    pcnt_config_t pcnt_config = {
+        .pulse_gpio_num = MOISTURE_PULSE_GPIO,  // GPIO for pulse input
+        .ctrl_gpio_num = PCNT_PIN_NOT_USED,    // No control pin
+        .channel = PCNT_CHANNEL_0,
+        .unit = PCNT_UNIT_0,
+        .pos_mode = PCNT_COUNT_INC,            // Count rising edges
+        .neg_mode = PCNT_COUNT_DIS,           // Ignore falling edges
+        .lctrl_mode = PCNT_MODE_KEEP,         // Keep the counter mode
+        .hctrl_mode = PCNT_MODE_KEEP,
+        .counter_h_lim = 10000,               // High limit (arbitrary large value)
+        .counter_l_lim = 0                    // Low limit
+    };
 
-// Set up the humidity sensor pin and power on the sensor
-void setup_humidity_pin() {
-    gpio_set_direction(HUMIDITY_POWER_PIN, GPIO_MODE_OUTPUT);  // Set sensor power pin as output
-    gpio_set_level(HUMIDITY_POWER_PIN, 1);  // Turn on power
-    hdc1080.begin(0x40);  // Initialize humidity sensor (I2C address: 0x40)
+    // Initialize the PCNT unit
+    pcnt_unit_config(&pcnt_config);
+
+    // Enable counter filtering to avoid noise
+    pcnt_set_filter_value(PCNT_UNIT_0, 1000);  // 1000 us filter
+    pcnt_filter_enable(PCNT_UNIT_0);
+
+    // Initialize counter to zero
+    pcnt_counter_pause(PCNT_UNIT_0);
+    pcnt_counter_clear(PCNT_UNIT_0);
+
+    // Enable the counter
+    pcnt_counter_resume(PCNT_UNIT_0);
 }
 
-// Set up the soil moisture sensor pin (GPIO34, ADC1 Channel 6)
-void setup_moisture_pin() {
-    adc1_config_width(ADC_WIDTH_BIT_12);  // Set ADC resolution to 12 bits
-    adc1_config_channel_atten(MOISTURE_PIN, ADC_ATTEN_DB_11);  // Set attenuation to adapt to 0-3.3V
-}
-
-// Read data from the humidity sensor
-float read_humidity() {
-    return hdc1080.readHumidity();  // Read humidity percentage
-}
-
-// Read the ADC value from the soil moisture sensor
+// Function to read soil moisture
 int read_moisture() {
-    return adc1_get_raw(MOISTURE_PIN);  // Get ADC value from soil moisture sensor
+    int16_t moisture_count = 0;
+
+    // Clear and start counting
+    pcnt_counter_clear(PCNT_UNIT_0);
+    pcnt_counter_resume(PCNT_UNIT_0);
+
+    // Wait for the specified delay
+    vTaskDelay(pdMS_TO_TICKS(SOIL_PULSE_COUNT_DELAY));
+
+    // Get the pulse count
+    pcnt_get_counter_value(PCNT_UNIT_0, &moisture_count);
+
+    // Pause the counter
+    pcnt_counter_pause(PCNT_UNIT_0);
+
+    return abs(moisture_count);  // Return absolute value of pulse count
 }
 
+// Function to enable and disable sensor power
+void enable_sensor_power() {
+    gpio_set_direction(POWER_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(POWER_GPIO, 1);  // Power on
+}
+
+void disable_sensor_power() {
+    gpio_set_level(POWER_GPIO, 0);  // Power off
+}
+
+// Main function
 void app_main() {
-    // Initialize humidity and soil moisture sensor pins
-    setup_humidity_pin();
-    setup_moisture_pin();
+    // Configure GPIO and PCNT
+    configure_pcnt();
+    gpio_set_direction(POWER_GPIO, GPIO_MODE_OUTPUT);
 
-    // Initialize logging system
-    esp_log_level_set("SENSOR", ESP_LOG_INFO);
+    while (1) {
+        // Enable sensor power
+        enable_sensor_power();
 
-    while (true) {
-        // Power on the sensor
-        gpio_set_level(HUMIDITY_POWER_PIN, 1);  
-        
-        // Read humidity sensor data
-        float humidity = read_humidity();
-        // Read soil moisture sensor data
-        int moisture = read_moisture();
-        
-        // Print sensor data
-        ESP_LOGI("SENSOR", "Humidity: %.2f%%", humidity);  // Print humidity value
-        ESP_LOGI("SENSOR", "Soil Moisture ADC Value: %d", moisture);  // Print soil moisture value
+        // Read soil moisture
+        int moisture_value = read_moisture();
+        ESP_LOGI("SOIL MOISTURE", "Pulse Count: %d", moisture_value);
 
-        // Power off the sensor to save energy
-        gpio_set_level(HUMIDITY_POWER_PIN, 0);
+        // Disable sensor power to save energy
+        disable_sensor_power();
 
-        // Read every 5 seconds
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        // Delay before next reading
+        vTaskDelay(pdMS_TO_TICKS(5000));  // 5 seconds
     }
 }
