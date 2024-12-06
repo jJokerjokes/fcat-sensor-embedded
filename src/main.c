@@ -5,7 +5,7 @@
 #include "driver/pcnt.h"
 #include "driver/gpio.h"
 
-#define MOISTURE_PULSE_GPIO ADC1_CHANNEL_6  // GPIO 34 for ADC1_CHANNEL_6
+#define MOISTURE_PULSE_GPIO GPIO_NUM_34  // GPIO 34 humidity sensor
 #define POWER_GPIO GPIO_NUM_26
 int16_t SOIL_PULSE_COUNT_DELAY = 500 ;    // Delay for pulse count in milliseconds
 
