@@ -10,3 +10,47 @@ lib_deps = mikem/RadioHead@^1.120
 board = esp32dev
 upload_speed = 115200
 lib_deps = closedcube/ClosedCube HDC1080@^1.3.2
+
+
+
+
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[env:esp32dev]
+platform = espressif32
+board = esp32dev
+
+; 这里只写 framework = espidf
+; 但会在后面通过 build_flags 等方式启用 Arduino 组件
+framework = espidf
+
+; 可根据需要指定监视器的波特率
+monitor_speed = 115200
+
+; 让编译输出更详细或保留为默认
+; build_type = debug
+
+; 若需要指定分区，使用：
+board_build.partitions = default_2MB.csv
+board_build.flash_size = 2MB
+
+platform_packages =
+  framework-arduinoespressif32 @ https://github.com/espressif/arduino-esp32#2.0.11
+; 这行是示例, 让 LED GPIO=2
+
+build_flags = 
+    -D CONFIG_BLINK_GPIO=2
+
+; 你需要的库同时包含 Arduino 生态的 RadioHead 和 ClosedCube HDC1080
+lib_deps = 
+    mikem/RadioHead@^1.120
+    closedcube/ClosedCube HDC1080@^1.3.2
+
