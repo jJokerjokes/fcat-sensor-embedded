@@ -1,0 +1,175 @@
+#include "driver/gpio.h"
+#include "driver/adc.h"
+#include "driver/pcnt.h"
+#include "esp_timer.h"
+#include "esp_adc_cal.h"
+#include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <cstdint>
+#include <string>
+
+// 电源控制
+#define POWER_RAIL_GPIO  GPIO_NUM_26
+#define POWER_STABLE_DELAY_US  10000  // 电源稳定时间（微秒）
+
+// 传感器 ADC 通道
+#define BATTERY_ADC_CHANNEL   ADC2_CHANNEL_8  // GPIO25
+#define MOISTURE_ADC_CHANNEL  ADC1_CHANNEL_6  // GPIO34
+#define LIGHT_ADC_CHANNEL     ADC1_CHANNEL_7  // GPIO35
+
+// 脉冲计数器配置（PCNT）
+#define MOISTURE_PCNT_UNIT    PCNT_UNIT_0
+#define MOISTURE_PCNT_H_LIM   INT16_MAX
+#define MOISTURE_PCNT_L_LIM   INT16_MIN
+
+// 测量相关常量
+#define MAX_MEASUREMENTS      5
+#define SOIL_PULSE_COUNT_DELAY_MS  500
+#define SOIL_PULSE_COUNT_DELAY_US  (SOIL_PULSE_COUNT_DELAY_MS * 1000)
+
+// 状态机定义
+#define WAITING  0
+#define SENSING  1
+#define RECEIVING 2
+#define SENDING  3
+
+
+// 测量数据结构
+struct Measurement {
+    unsigned int timestamp;
+    unsigned int moisture_percent;
+    float temperature;
+    float humidity;
+    unsigned int light_level;
+    int battery_level;
+};
+
+// 全局变量
+RTC_DATA_ATTR unsigned int measurement_count = 0;
+RTC_DATA_ATTR struct Measurement measurements[MAX_MEASUREMENTS];
+RTC_DATA_ATTR unsigned int state = WAITING;
+
+
+
+struct Packet {
+    unsigned int node_number;
+    uint8_t sensors[4];
+    struct Measurement data[MAX_MEASUREMENTS];
+};
+
+// 电源控制函数
+void ENABLE_ACC_RAIL() {
+    gpio_set_level(POWER_RAIL_GPIO, 1);
+    const int64_t start = esp_timer_get_time();
+    while (esp_timer_get_time() - start < POWER_STABLE_DELAY_US) {} // 精确等待
+}
+
+void DISABLE_ACC_RAIL() {
+    gpio_set_level(POWER_RAIL_GPIO, 0);
+}
+
+// 初始化 GPIO 和传感器
+void measureSetup() {
+    // 配置电源控制引脚
+    gpio_config_t power_rail_conf = {
+        .pin_bit_mask = (1ULL << POWER_RAIL_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&power_rail_conf);
+
+    // 初始化 ADC
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(LIGHT_ADC_CHANNEL, ADC_ATTEN_DB_12);
+    adc1_config_channel_atten(MOISTURE_ADC_CHANNEL, ADC_ATTEN_DB_12);
+    adc2_config_channel_atten(BATTERY_ADC_CHANNEL, ADC_ATTEN_DB_12);
+
+
+    // 初始化 PCNT（脉冲计数器）
+    pcnt_config_t pcnt_config;
+    pcnt_config.pulse_gpio_num = GPIO_NUM_6;
+    pcnt_config.ctrl_gpio_num = -1;
+    pcnt_config.pos_mode = PCNT_COUNT_INC;
+    pcnt_config.neg_mode = PCNT_COUNT_DIS;
+    pcnt_config.lctrl_mode = PCNT_MODE_KEEP;
+    pcnt_config.hctrl_mode = PCNT_MODE_KEEP;
+    pcnt_config.counter_h_lim = MOISTURE_PCNT_H_LIM;
+    pcnt_config.counter_l_lim = MOISTURE_PCNT_L_LIM;
+    pcnt_config.unit = MOISTURE_PCNT_UNIT;
+    pcnt_config.channel = PCNT_CHANNEL_0;
+    pcnt_unit_config(&pcnt_config);
+    pcnt_filter_enable(MOISTURE_PCNT_UNIT);
+}
+
+// 读取土壤湿度
+unsigned int readMoisture() {
+    int16_t moisture_count = 0;
+    pcnt_counter_clear(MOISTURE_PCNT_UNIT);
+    pcnt_counter_resume(MOISTURE_PCNT_UNIT);
+
+    const int64_t end_time = esp_timer_get_time() + SOIL_PULSE_COUNT_DELAY_US;
+    while (esp_timer_get_time() < end_time) {} // 精确延时
+
+    pcnt_get_counter_value(MOISTURE_PCNT_UNIT, &moisture_count);
+    pcnt_counter_pause(MOISTURE_PCNT_UNIT);
+    return abs(moisture_count);
+}
+
+// 读取光照和电池电压
+void readLightAndBattery(struct Measurement *m) {
+    m->light_level = adc1_get_raw(LIGHT_ADC_CHANNEL);
+    adc2_get_raw(BATTERY_ADC_CHANNEL, ADC_WIDTH_BIT_12, &m->battery_level);
+}
+
+// 传感器任务（隔离 Arduino 依赖）
+void sensorTask(void *pvParameters) {
+    struct Measurement m;
+    ENABLE_ACC_RAIL();
+
+    m.moisture_percent = readMoisture();
+    readLightAndBattery(&m);
+    m.timestamp = esp_timer_get_time() / 1000; // 毫秒级时间戳
+
+    DISABLE_ACC_RAIL();
+    xTaskNotifyGive((TaskHandle_t)pvParameters); // 通知主任务完成
+    vTaskDelete(NULL);
+}
+
+
+bool saveReading(struct Measurement m) {
+    measurements[measurement_count] = m;
+    measurement_count++;
+    return measurement_count == MAX_MEASUREMENTS;
+}
+
+void printMeasurement(struct Measurement m) {
+    printf("Moisture: %d%%\n", m.moisture_percent);
+    printf("Temperature: %.2fF\n", m.temperature);
+    printf("Humidity: %.2f%%\n", m.humidity);
+    printf("Light Level: %d\n", m.light_level);
+    printf("Battery Level: %dmV\n", m.battery_level);
+}
+
+void app_main() {
+    measureSetup();
+
+    while (1) {
+        if (state == SENSING) {
+            TaskHandle_t mainTaskHandle = xTaskGetCurrentTaskHandle();
+            xTaskCreate(sensorTask, "sensorTask", 4096, mainTaskHandle, 2, NULL);
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY); // 等待传感器任务完成
+
+            if (saveReading(measurements[measurement_count])) {
+                state = SENDING;
+            }
+        } else if (state == SENDING) {
+            // 发送数据逻辑
+            state = WAITING;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100)); // 主循环延迟
+    }
+}
