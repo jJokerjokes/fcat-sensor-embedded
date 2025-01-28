@@ -6,34 +6,35 @@
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <Arduino.h>
+#include <stdio.h>
 #include <cstdint>
 #include <string>
 
 // 电源控制
-#define POWER_RAIL_GPIO  GPIO_NUM_26
-#define POWER_STABLE_DELAY_US  10000  // 电源稳定时间（微秒）
+#define POWER_RAIL_GPIO GPIO_NUM_26
+#define POWER_STABLE_DELAY_US 10000  // 电源稳定时间（微秒）
 
 // 传感器 ADC 通道
-#define BATTERY_ADC_CHANNEL   ADC2_CHANNEL_8  // GPIO25
-#define MOISTURE_ADC_CHANNEL  ADC1_CHANNEL_6  // GPIO34
-#define LIGHT_ADC_CHANNEL     ADC1_CHANNEL_7  // GPIO35
+#define BATTERY_ADC_CHANNEL ADC2_CHANNEL_8  // GPIO25
+#define MOISTURE_ADC_CHANNEL ADC1_CHANNEL_6 // GPIO34
+#define LIGHT_ADC_CHANNEL ADC1_CHANNEL_7    // GPIO35
 
 // 脉冲计数器配置（PCNT）
-#define MOISTURE_PCNT_UNIT    PCNT_UNIT_0
-#define MOISTURE_PCNT_H_LIM   INT16_MAX
-#define MOISTURE_PCNT_L_LIM   INT16_MIN
+#define MOISTURE_PCNT_UNIT PCNT_UNIT_0
+#define MOISTURE_PCNT_H_LIM INT16_MAX
+#define MOISTURE_PCNT_L_LIM INT16_MIN
 
 // 测量相关常量
-#define MAX_MEASUREMENTS      5
-#define SOIL_PULSE_COUNT_DELAY_MS  500
-#define SOIL_PULSE_COUNT_DELAY_US  (SOIL_PULSE_COUNT_DELAY_MS * 1000)
+#define MAX_MEASUREMENTS 5
+#define SOIL_PULSE_COUNT_DELAY_MS 500
+#define SOIL_PULSE_COUNT_DELAY_US (SOIL_PULSE_COUNT_DELAY_MS * 1000)
 
 // 状态机定义
-#define WAITING  0
-#define SENSING  1
+#define WAITING 0
+#define SENSING 1
 #define RECEIVING 2
-#define SENDING  3
-
+#define SENDING 3
 
 // 测量数据结构
 struct Measurement {
@@ -49,14 +50,6 @@ struct Measurement {
 RTC_DATA_ATTR unsigned int measurement_count = 0;
 RTC_DATA_ATTR struct Measurement measurements[MAX_MEASUREMENTS];
 RTC_DATA_ATTR unsigned int state = WAITING;
-
-
-
-struct Packet {
-    unsigned int node_number;
-    uint8_t sensors[4];
-    struct Measurement data[MAX_MEASUREMENTS];
-};
 
 // 电源控制函数
 void ENABLE_ACC_RAIL() {
@@ -77,8 +70,7 @@ void measureSetup() {
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
+        .intr_type = GPIO_INTR_DISABLE};
     gpio_config(&power_rail_conf);
 
     // 初始化 ADC
@@ -86,7 +78,6 @@ void measureSetup() {
     adc1_config_channel_atten(LIGHT_ADC_CHANNEL, ADC_ATTEN_DB_12);
     adc1_config_channel_atten(MOISTURE_ADC_CHANNEL, ADC_ATTEN_DB_12);
     adc2_config_channel_atten(BATTERY_ADC_CHANNEL, ADC_ATTEN_DB_12);
-
 
     // 初始化 PCNT（脉冲计数器）
     pcnt_config_t pcnt_config;
@@ -125,7 +116,7 @@ void readLightAndBattery(struct Measurement *m) {
 }
 
 // 传感器任务（隔离 Arduino 依赖）
-void sensorTask(void *pvParameters) {
+void sensorTask(void *pvParameter) {
     struct Measurement m;
     ENABLE_ACC_RAIL();
 
@@ -134,10 +125,9 @@ void sensorTask(void *pvParameters) {
     m.timestamp = esp_timer_get_time() / 1000; // 毫秒级时间戳
 
     DISABLE_ACC_RAIL();
-    xTaskNotifyGive((TaskHandle_t)pvParameters); // 通知主任务完成
+    xTaskNotifyGive((TaskHandle_t)pvParameter); // 通知主任务完成
     vTaskDelete(NULL);
 }
-
 
 bool saveReading(struct Measurement m) {
     measurements[measurement_count] = m;
@@ -153,8 +143,13 @@ void printMeasurement(struct Measurement m) {
     printf("Battery Level: %dmV\n", m.battery_level);
 }
 
-void app_main() {
+#if !CONFIG_AUTOSTART_ARDUINO
+extern "C" void app_main() {
+    initArduino(); // 初始化 Arduino 框架
     measureSetup();
+
+    // 启动任务
+    xTaskCreate(&sensorTask, "sensor_task", configMINIMAL_STACK_SIZE, NULL, 5, NULL);
 
     while (1) {
         if (state == SENSING) {
@@ -166,10 +161,20 @@ void app_main() {
                 state = SENDING;
             }
         } else if (state == SENDING) {
-            // 发送数据逻辑
-            state = WAITING;
+            state = WAITING; // 模拟发送数据完成
         }
 
         vTaskDelay(pdMS_TO_TICKS(100)); // 主循环延迟
     }
 }
+#else
+void setup() {
+    Serial.begin(115200);
+    measureSetup();
+}
+
+void loop() {
+    Serial.println("Arduino loop running...");
+    delay(1000);
+}
+#endif
