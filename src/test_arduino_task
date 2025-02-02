@@ -1,11 +1,8 @@
-//#define CONFIG_AUTOSTART_ARDUINO 0
-//sdkconfig.h
-
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"  // 用于事件组
 #include "esp_log.h"
-
 #include <Arduino.h>
 
 // 日志标签（ESP-IDF 风格）
@@ -17,22 +14,32 @@ static const char* TAG = "APP";
 #define ARDUINO_TASK_STACK_SIZE 4096    // 分配给 Arduino 任务的栈大小（字节）
 #define ARDUINO_TASK_PRIORITY    5       // Arduino 任务优先级
 
+// 定义事件组中用于标识 Arduino 任务完成工作的位
+#define ARDUINO_FINISHED_BIT     (1 << 0)
+
 // ---------------------------------------------------------
 // 静态分配内存：用于创建 Arduino 任务
 // ---------------------------------------------------------
 static StaticTask_t arduinoTaskTCB;
 static StackType_t arduinoTaskStack[ARDUINO_TASK_STACK_SIZE];
 
+// 全局事件组句柄，用于 Arduino 任务通知主任务
+EventGroupHandle_t arduino_event_group = NULL;
+
 // ---------------------------------------------------------
 // Arduino 任务函数
-// 此任务调用 Arduino 函数（如 Serial.println 和 delay），
-// 打印“现在是 arduino”，延时 5 秒后进入无限循环，等待主任务删除。
+//
+// 此任务调用 Arduino 的函数（如 Serial.println 和 delay），
+// 打印“现在是 arduino”，延时 5 秒后发出完成信号，然后进入无限循环等待 ESP-IDF 主任务删除。
 // ---------------------------------------------------------
 void arduinoTask(void *pvParameters) {
     Serial.println("现在是 arduino");
     delay(5000);  // 使用 Arduino 的延时函数，大约延时 5 秒
 
-    // 任务完成主要动作后进入无限循环等待删除
+    // 任务完成主要工作后，发送完成信号给主任务
+    xEventGroupSetBits(arduino_event_group, ARDUINO_FINISHED_BIT);
+
+    // 进入无限循环等待主任务删除
     while (true) {
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
@@ -41,16 +48,21 @@ void arduinoTask(void *pvParameters) {
 // ---------------------------------------------------------
 // ESP-IDF 主入口函数
 // 1. 调用 initArduino() 初始化 Arduino 环境；
-// 2. 在循环中，静态创建 Arduino 任务，等待一定时间后删除，再延时后循环。
+// 2. 创建事件组供 Arduino 任务与主任务通信；
+// 3. 在循环中，静态创建 Arduino 任务，等待 Arduino 发出完成信号后删除任务，
+//    然后延时后重新创建任务，形成周期性循环。
 // ---------------------------------------------------------
 extern "C" void app_main(void) {
     // 初始化 Arduino 环境
     initArduino();
-
+    
     // 初始化 Serial（如未在 initArduino() 内部自动初始化）
     Serial.begin(115200);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     ESP_LOGI(TAG, "ESP-IDF app_main 启动");
+
+    // 创建事件组，用于接收 Arduino 任务完成信号
+    arduino_event_group = xEventGroupCreate();
 
     while (true) {
         // 创建 Arduino 任务（静态内存分配）
@@ -65,12 +77,24 @@ extern "C" void app_main(void) {
         );
         ESP_LOGI(TAG, "Arduino 任务创建成功");
 
-        // 等待 6 秒（确保 Arduino 任务内的 5 秒延时已完成）
-        vTaskDelay(6000 / portTICK_PERIOD_MS);
+        // 等待 Arduino 任务发送完成信号（阻塞等待）
+        EventBits_t bits = xEventGroupWaitBits(
+            arduino_event_group,        // 事件组句柄
+            ARDUINO_FINISHED_BIT,       // 需要等待的位
+            pdTRUE,                     // 自动清除接收到的位
+            pdFALSE,                    // 不要求同时等待多个位
+            portMAX_DELAY               // 无限等待
+        );
+        if (bits & ARDUINO_FINISHED_BIT) {
+            ESP_LOGI(TAG, "收到 Arduino 任务完成信号");
+        }
 
         // 删除 Arduino 任务
         vTaskDelete(arduinoTaskHandle);
         ESP_LOGI(TAG, "Arduino 任务已删除");
+
+        // 清除事件组中的位（如果还未自动清除）
+        xEventGroupClearBits(arduino_event_group, ARDUINO_FINISHED_BIT);
 
         // 等待 5 秒后重新创建任务，形成周期性循环
         vTaskDelay(5000 / portTICK_PERIOD_MS);
